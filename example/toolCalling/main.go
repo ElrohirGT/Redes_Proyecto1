@@ -4,13 +4,22 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/invopop/jsonschema"
+	"github.com/joho/godotenv"
 )
 
 func main() {
-	client := anthropic.NewClient()
+	err := godotenv.Load()
+	if err != nil {
+		panic(err)
+	}
+	client := anthropic.NewClient(
+		option.WithAPIKey(os.Getenv("API_KEY")),
+	)
 
 	content := "Where is San Francisco?"
 
