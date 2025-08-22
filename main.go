@@ -3,18 +3,32 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
 	"strings"
 
+	ant "github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/joho/godotenv"
 )
 
 const GAP = "\n\n"
 
 func main() {
-	p := tea.NewProgram(initialModel())
+	err := godotenv.Load()
+	if err != nil {
+		log.Panic(err)
+	}
+
+	apiKey, exists := os.LookupEnv("API_KEY")
+	if !exists {
+		log.Panic("Env variable `API_KEY` doesn't exists!")
+	}
+
+	p := tea.NewProgram(initialModel(apiKey))
 	if _, err := p.Run(); err != nil {
 		log.Fatal(err)
 	}
@@ -26,14 +40,15 @@ type viewportMsg struct {
 }
 
 type model struct {
-	viewport    viewport.Model
-	messages    []viewportMsg
-	textarea    textarea.Model
-	senderStyle lipgloss.Style
-	err         error
+	viewport     viewport.Model
+	messages     []viewportMsg
+	textarea     textarea.Model
+	senderStyle  lipgloss.Style
+	claudeClient ant.Client
+	err          error
 }
 
-func initialModel() model {
+func initialModel(apiKey string) model {
 	ta := textarea.New()
 	ta.Placeholder = "Send a message..."
 	ta.Focus()
@@ -51,11 +66,16 @@ func initialModel() model {
 	vp := viewport.New(30, 5)
 	vp.SetContent("Welcome! Chat to claude...")
 
+	client := ant.NewClient(
+		option.WithAPIKey(apiKey),
+	)
+
 	return model{
-		textarea:    ta,
-		viewport:    vp,
-		senderStyle: lipgloss.NewStyle().Foreground(lipgloss.Color("5")),
-		err:         nil,
+		textarea:     ta,
+		viewport:     vp,
+		senderStyle:  lipgloss.NewStyle().Foreground(lipgloss.Color("5")),
+		err:          nil,
+		claudeClient: client,
 	}
 }
 
@@ -94,7 +114,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyEsc:
-			fmt.Println(m.textarea.Value())
 			return m, tea.Quit
 		case tea.KeyEnter:
 			m.messages = append(m.messages, viewportMsg{content: m.textarea.Value(), author: "You"})
