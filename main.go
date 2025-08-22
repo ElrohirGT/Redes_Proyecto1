@@ -13,9 +13,21 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/joho/godotenv"
+	mcp "github.com/metoro-io/mcp-golang"
+	"github.com/metoro-io/mcp-golang/transport/http"
+	"github.com/pelletier/go-toml/v2"
 )
 
 const GAP = "\n\n"
+
+type MCPServerConfig struct {
+	Endpoint string
+	URL      string
+}
+
+type Config struct {
+	Servers []MCPServerConfig
+}
 
 func main() {
 	err := godotenv.Load()
@@ -28,7 +40,18 @@ func main() {
 		log.Panic("Env variable `API_KEY` doesn't exists!")
 	}
 
-	p := tea.NewProgram(initialModel(apiKey))
+	contents, err := os.ReadFile("config.toml")
+	if err != nil {
+		log.Panic("Failed to read config file:", err)
+	}
+
+	var config Config
+	err = toml.Unmarshal(contents, &config)
+	if err != nil {
+		log.Panic("Incorrect format in config:", err)
+	}
+
+	p := tea.NewProgram(initialModel(apiKey, config))
 	if _, err := p.Run(); err != nil {
 		log.Fatal(err)
 	}
@@ -40,15 +63,18 @@ type viewportMsg struct {
 }
 
 type model struct {
-	viewport     viewport.Model
-	messages     []viewportMsg
-	textarea     textarea.Model
-	senderStyle  lipgloss.Style
+	viewport    viewport.Model
+	messages    []viewportMsg
+	textarea    textarea.Model
+	senderStyle lipgloss.Style
+
+	// AI AGENTS PROPERTIES
 	claudeClient ant.Client
+	mcpClients   []*mcp.Client
 	err          error
 }
 
-func initialModel(apiKey string) model {
+func initialModel(apiKey string, config Config) model {
 	ta := textarea.New()
 	ta.Placeholder = "Send a message..."
 	ta.Focus()
@@ -70,12 +96,21 @@ func initialModel(apiKey string) model {
 		option.WithAPIKey(apiKey),
 	)
 
+	mcpClients := make([]*mcp.Client, 0, len(config.Servers))
+	for _, clientConfig := range config.Servers {
+		transport := http.NewHTTPClientTransport(clientConfig.Endpoint)
+		transport.WithBaseURL(clientConfig.URL)
+		log.Println("Connecting to client:", clientConfig.URL)
+		mcpClients = append(mcpClients, mcp.NewClient(transport))
+	}
+
 	return model{
 		textarea:     ta,
 		viewport:     vp,
 		senderStyle:  lipgloss.NewStyle().Foreground(lipgloss.Color("5")),
-		err:          nil,
 		claudeClient: client,
+		mcpClients:   mcpClients,
+		err:          nil,
 	}
 }
 
