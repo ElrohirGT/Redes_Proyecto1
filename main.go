@@ -10,15 +10,22 @@ import (
 
 	ant "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/invopop/jsonschema"
 	"github.com/joho/godotenv"
 	mcp "github.com/metoro-io/mcp-golang"
 	"github.com/metoro-io/mcp-golang/transport/http"
 	"github.com/pelletier/go-toml/v2"
 )
+
+const HELP_CONTENT = `
+F1: View Help
+F2: View Logs
+`
 
 const GAP = "\n\n"
 
@@ -32,6 +39,13 @@ type Config struct {
 }
 
 var LOG *log.Logger
+
+type ClaudeResponse = *ant.Message
+type ToolResponse struct {
+	IsError     bool
+	MCPResponse *mcp.ToolResponse
+	ToolId      string
+}
 
 func main() {
 	logfile, err := os.OpenFile("app.log", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
@@ -76,20 +90,16 @@ func main() {
 	// fmt.Fprint(os.Stderr, string(contents))
 }
 
-type viewportMsg struct {
-	content string
-	author  string
-}
-
 type model struct {
 	viewport    viewport.Model
-	messages    []viewportMsg
+	messages    []ant.MessageParam
 	textarea    textarea.Model
 	senderStyle lipgloss.Style
 
 	// AI AGENTS PROPERTIES
 	claudeClient     ant.Client
 	mcpClients       []*mcp.Client
+	tools            []ant.ToolUnionParam
 	clientByToolName map[string]*mcp.Client
 	err              error
 }
@@ -116,6 +126,7 @@ func initialModel(apiKey string, config Config) model {
 		option.WithAPIKey(apiKey),
 	)
 
+	tools := make([]ant.ToolUnionParam, 0, len(config.Servers))
 	clientByToolName := make(map[string]*mcp.Client)
 	mcpClients := make([]*mcp.Client, 0, len(config.Servers))
 	for _, clientConfig := range config.Servers {
@@ -132,14 +143,34 @@ func initialModel(apiKey string, config Config) model {
 
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		tools, err := client.ListTools(ctx, nil)
+		svTools, err := client.ListTools(ctx, nil)
 		if err != nil {
 			LOG.Panicf("Failed to obtain tools for %s: %s", clientConfig.URL, err)
 		}
 
-		for _, tool := range tools.Tools {
-			LOG.Println("Adding tool:", tool.Name, "-", *tool.Description)
+		for _, tool := range svTools.Tools {
+			desc := ""
+			if tool.Description != nil {
+				desc = *tool.Description
+			}
+			LOG.Println("Adding tool:", tool.Name, "-", desc)
 			clientByToolName[tool.Name] = client
+
+			reflector := jsonschema.Reflector{
+				AllowAdditionalProperties: false,
+				DoNotReference:            true,
+			}
+			schema := reflector.Reflect(tool.InputSchema)
+			tools = append(tools, ant.ToolUnionParam{
+				OfTool: &ant.ToolParam{
+					Name:        tool.Name,
+					Description: param.NewOpt(desc),
+					InputSchema: ant.ToolInputSchemaParam{
+						Required:   schema.Required,
+						Properties: schema.Properties,
+					},
+				},
+			})
 		}
 	}
 
@@ -151,15 +182,40 @@ func initialModel(apiKey string, config Config) model {
 		mcpClients:       mcpClients,
 		clientByToolName: clientByToolName,
 		err:              nil,
+		tools:            tools,
 	}
 }
 
 func (m model) StringMessages() []string {
-	a := make([]string, 0, len(m.messages))
-	for _, v := range m.messages {
-		a = append(a, m.senderStyle.Render(v.author+": ")+v.content)
+	messages := make([]string, 0, len(m.messages))
+	for _, msg := range m.messages {
+		strMsg := strings.Builder{}
+		author := "You:"
+		if msg.Role == "assistant" {
+			author = "Claude:"
+		}
+
+		strMsg.WriteString(m.senderStyle.Render(author))
+		strMsg.WriteRune(' ')
+		for _, ct := range msg.Content {
+			if param.IsOmitted(ct) {
+				continue
+			}
+
+			if ct.OfText != nil {
+				strMsg.WriteString(ct.OfText.Text)
+			} else if ct.OfToolUse != nil {
+				toolName := ct.OfToolUse.Name
+				strMsg.WriteString("Trying to use tool `")
+				strMsg.WriteString(toolName)
+				strMsg.WriteString("`")
+
+			}
+		}
+
+		messages = append(messages, strMsg.String())
 	}
-	return a
+	return messages
 }
 
 func (m model) Init() tea.Cmd {
@@ -190,27 +246,132 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyEsc:
 			return m, tea.Quit
+		case tea.KeyF1:
+			m.viewport.SetContent(HELP_CONTENT)
 		case tea.KeyEnter:
-			m.messages = append(m.messages, viewportMsg{content: m.textarea.Value(), author: "You"})
+			userMsg := m.textarea.Value()
+			authorMsg := ant.NewUserMessage(
+				ant.NewTextBlock(userMsg),
+			)
+
+			m.messages = append(m.messages, authorMsg)
+			claudeCmd := claudeCall(context.Background(), m.claudeClient, m.messages, m.tools)
+
 			m.viewport.SetContent(lipgloss.NewStyle().Width(m.viewport.Width).Render(strings.Join(m.StringMessages(), "\n")))
 			m.textarea.Reset()
 			m.viewport.GotoBottom()
+			return m, tea.Batch(taCmd, vpCmd, claudeCmd)
 		}
 
 	// We handle errors just like any other message
 	case error:
 		m.err = msg
 		return m, nil
+	case ClaudeResponse:
+		m.messages = append(m.messages, msg.ToParam())
+		m.viewport.SetContent(lipgloss.NewStyle().Width(m.viewport.Width).Render(strings.Join(m.StringMessages(), "\n")))
+		m.viewport.GotoBottom()
+
+		if msg.StopReason == ant.StopReasonToolUse {
+			toolBlock := msg.Content[len(msg.Content)-1].AsToolUse()
+			toolName := toolBlock.Name
+			client, found := m.clientByToolName[toolName]
+			if !found {
+				LOG.Panic("Claude tried to use", toolName, ". But this tool doens't exist!")
+			}
+
+			toolCmd := toolCall(context.Background(), client, toolBlock)
+			return m, tea.Batch(taCmd, vpCmd, toolCmd)
+		}
+
+	case ToolResponse:
+		toolResponse := ant.MessageParam{
+			Role:    "assistant",
+			Content: []ant.ContentBlockParamUnion{},
+		}
+
+		for _, ct := range msg.MCPResponse.Content {
+			resultBlock := ant.NewToolResultBlock(msg.ToolId, ct.TextContent.Text, strings.Contains(ct.TextContent.Text, "Error"))
+			toolResponse.Content = append(toolResponse.Content, resultBlock)
+		}
+
+		m.messages = append(m.messages, toolResponse)
+		m.viewport.SetContent(lipgloss.NewStyle().Width(m.viewport.Width).Render(strings.Join(m.StringMessages(), "\n")))
+		m.viewport.GotoBottom()
+
+		claudeCmd := claudeCall(context.Background(), m.claudeClient, m.messages, m.tools)
+		return m, tea.Batch(taCmd, vpCmd, claudeCmd)
 	}
 
 	return m, tea.Batch(taCmd, vpCmd)
 }
 
+func toolCall(ctx context.Context, client *mcp.Client, toolInfo ant.ToolUseBlock) tea.Cmd {
+	ctx, cancelCtx := context.WithTimeout(ctx, 10*time.Second)
+	return func() tea.Msg {
+		defer cancelCtx()
+		LOG.Printf("Calling tool `%s` for response...", toolInfo.Name)
+
+		toolJsonReq, err := toolInfo.Input.MarshalJSON()
+		if err != nil {
+			LOG.Printf("ERROR: Failed to marshal tool input into string!")
+			return err
+		}
+
+		resp, err := client.CallTool(ctx, toolInfo.Name, toolJsonReq)
+		if err != nil {
+			LOG.Println("ERROR: Failed to call tool:", err)
+			return err
+		}
+
+		return ToolResponse{
+			IsError:     false,
+			MCPResponse: resp,
+			ToolId:      toolInfo.ID,
+		}
+	}
+}
+
+func claudeCall(ctx context.Context, client ant.Client, chatHistory []ant.MessageParam, tools []ant.ToolUnionParam) tea.Cmd {
+	ctx, cancelCtx := context.WithTimeout(ctx, 10*time.Minute)
+	return func() tea.Msg {
+		defer cancelCtx()
+
+		LOG.Println("Calling claude for response...")
+		message, err := client.Messages.New(ctx, ant.MessageNewParams{
+			MaxTokens: 1024,
+			Messages:  chatHistory,
+			Model:     ant.ModelClaudeSonnet4_20250514,
+			Tools:     tools,
+		},
+			option.WithDebugLog(LOG),
+		)
+
+		if err != nil {
+			LOG.Println("Failed to get response from claude:", err)
+			return err
+		} else {
+			LOG.Println("Claude responded correctly!")
+			return message
+		}
+	}
+}
+
 func (m model) View() string {
-	return fmt.Sprintf(
-		"%s%s%s",
-		m.viewport.View(),
-		"\n\n",
-		m.textarea.View(),
-	)
+	if m.err != nil {
+		return fmt.Sprintf(
+			"%s%s%s%s",
+			m.viewport.View(),
+			"ERROR: "+m.err.Error(),
+			"\n",
+			m.textarea.View(),
+		)
+	} else {
+		return fmt.Sprintf(
+			"%s%s%s",
+			m.viewport.View(),
+			GAP,
+			m.textarea.View(),
+		)
+	}
 }
