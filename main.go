@@ -39,7 +39,7 @@ func main() {
 		log.Fatal("Failed to open log file:", err)
 	}
 	defer logfile.Close()
-	LOG = log.New(logfile, "INFO", log.LstdFlags)
+	LOG = log.New(logfile, "CLIude: ", log.LstdFlags)
 
 	err = godotenv.Load()
 	if err != nil {
@@ -67,6 +67,13 @@ func main() {
 		LOG.Fatal(err)
 	}
 
+	// logfile, err = os.OpenFile("app.log", os.O_RDONLY, 0644)
+	// if err != nil {
+	// 	log.Fatal("Failed to open log file:", err)
+	// }
+	// defer logfile.Close()
+	// contents, _ = io.ReadAll(logfile)
+	// fmt.Fprint(os.Stderr, string(contents))
 }
 
 type viewportMsg struct {
