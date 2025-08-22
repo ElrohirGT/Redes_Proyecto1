@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	ant "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -29,32 +31,42 @@ type Config struct {
 	Servers []MCPServerConfig
 }
 
+var LOG *log.Logger
+
 func main() {
-	err := godotenv.Load()
+	logfile, err := os.OpenFile("app.log", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
 	if err != nil {
-		log.Panic(err)
+		log.Fatal("Failed to open log file:", err)
+	}
+	defer logfile.Close()
+	LOG = log.New(logfile, "INFO", log.LstdFlags)
+
+	err = godotenv.Load()
+	if err != nil {
+		LOG.Panic(err)
 	}
 
 	apiKey, exists := os.LookupEnv("API_KEY")
 	if !exists {
-		log.Panic("Env variable `API_KEY` doesn't exists!")
+		LOG.Panic("Env variable `API_KEY` doesn't exists!")
 	}
 
 	contents, err := os.ReadFile("config.toml")
 	if err != nil {
-		log.Panic("Failed to read config file:", err)
+		LOG.Panic("Failed to read config file:", err)
 	}
 
 	var config Config
 	err = toml.Unmarshal(contents, &config)
 	if err != nil {
-		log.Panic("Incorrect format in config:", err)
+		LOG.Panic("Incorrect format in config:", err)
 	}
 
 	p := tea.NewProgram(initialModel(apiKey, config))
 	if _, err := p.Run(); err != nil {
-		log.Fatal(err)
+		LOG.Fatal(err)
 	}
+
 }
 
 type viewportMsg struct {
@@ -69,9 +81,10 @@ type model struct {
 	senderStyle lipgloss.Style
 
 	// AI AGENTS PROPERTIES
-	claudeClient ant.Client
-	mcpClients   []*mcp.Client
-	err          error
+	claudeClient     ant.Client
+	mcpClients       []*mcp.Client
+	clientByToolName map[string]*mcp.Client
+	err              error
 }
 
 func initialModel(apiKey string, config Config) model {
@@ -90,27 +103,47 @@ func initialModel(apiKey string, config Config) model {
 	ta.KeyMap.InsertNewline.SetEnabled(false)
 
 	vp := viewport.New(30, 5)
-	vp.SetContent("Welcome! Chat to claude...")
+	vp.SetContent("Welcome! Chat to claude...\nPress F1 to view help!")
 
 	client := ant.NewClient(
 		option.WithAPIKey(apiKey),
 	)
 
+	clientByToolName := make(map[string]*mcp.Client)
 	mcpClients := make([]*mcp.Client, 0, len(config.Servers))
 	for _, clientConfig := range config.Servers {
 		transport := http.NewHTTPClientTransport(clientConfig.Endpoint)
 		transport.WithBaseURL(clientConfig.URL)
-		log.Println("Connecting to client:", clientConfig.URL)
-		mcpClients = append(mcpClients, mcp.NewClient(transport))
+
+		LOG.Println("Connecting to client:", clientConfig.URL)
+		client := mcp.NewClient(transport)
+		_, err := client.Initialize(context.Background())
+		if err != nil {
+			LOG.Panicf("Failed to connect to %s: %s", clientConfig.URL, err)
+		}
+		mcpClients = append(mcpClients, client)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		tools, err := client.ListTools(ctx, nil)
+		if err != nil {
+			LOG.Panicf("Failed to obtain tools for %s: %s", clientConfig.URL, err)
+		}
+
+		for _, tool := range tools.Tools {
+			LOG.Println("Adding tool:", tool.Name, "-", *tool.Description)
+			clientByToolName[tool.Name] = client
+		}
 	}
 
 	return model{
-		textarea:     ta,
-		viewport:     vp,
-		senderStyle:  lipgloss.NewStyle().Foreground(lipgloss.Color("5")),
-		claudeClient: client,
-		mcpClients:   mcpClients,
-		err:          nil,
+		textarea:         ta,
+		viewport:         vp,
+		senderStyle:      lipgloss.NewStyle().Foreground(lipgloss.Color("5")),
+		claudeClient:     client,
+		mcpClients:       mcpClients,
+		clientByToolName: clientByToolName,
+		err:              nil,
 	}
 }
 
