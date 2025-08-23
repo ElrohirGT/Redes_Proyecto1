@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strings"
@@ -91,10 +92,11 @@ func main() {
 }
 
 type model struct {
-	viewport    viewport.Model
-	messages    []ant.MessageParam
-	textarea    textarea.Model
-	senderStyle lipgloss.Style
+	secondaryDisplay bool
+	viewport         viewport.Model
+	messages         []ant.MessageParam
+	textarea         textarea.Model
+	senderStyle      lipgloss.Style
 
 	// AI AGENTS PROPERTIES
 	claudeClient     ant.Client
@@ -230,6 +232,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	m.textarea, taCmd = m.textarea.Update(msg)
 	m.viewport, vpCmd = m.viewport.Update(msg)
+	viewportWidthStyle := lipgloss.NewStyle().Width(m.viewport.Width)
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -247,7 +250,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyCtrlC, tea.KeyEsc:
 			return m, tea.Quit
 		case tea.KeyF1:
-			m.viewport.SetContent(HELP_CONTENT)
+			m.secondaryDisplay = !m.secondaryDisplay
+			if m.secondaryDisplay {
+				m.viewport.SetContent(viewportWidthStyle.Render(HELP_CONTENT))
+			} else {
+				m.viewport.SetContent(viewportWidthStyle.Render(strings.Join(m.StringMessages(), "\n")))
+			}
+		case tea.KeyF2:
+			m.secondaryDisplay = !m.secondaryDisplay
+			if m.secondaryDisplay {
+				logsContent := []byte{}
+				if file, err := os.Open("app.log"); err == nil {
+					logsContent, _ = io.ReadAll(file)
+				}
+				m.viewport.SetContent(viewportWidthStyle.Render(string(logsContent)))
+			} else {
+				m.viewport.SetContent(viewportWidthStyle.Render(strings.Join(m.StringMessages(), "\n")))
+			}
+
 		case tea.KeyEnter:
 			userMsg := m.textarea.Value()
 			authorMsg := ant.NewUserMessage(
@@ -285,15 +305,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case ToolResponse:
-		toolResponse := ant.MessageParam{
-			Role:    "assistant",
-			Content: []ant.ContentBlockParamUnion{},
-		}
+		// toolResponse := ant.MessageParam{
+		// 	Role:    "assistant",
+		// 	Content: []ant.ContentBlockParamUnion{},
+		// }
 
+		blocks := make([]ant.ContentBlockParamUnion, 0, len(msg.MCPResponse.Content))
 		for _, ct := range msg.MCPResponse.Content {
 			resultBlock := ant.NewToolResultBlock(msg.ToolId, ct.TextContent.Text, strings.Contains(ct.TextContent.Text, "Error"))
-			toolResponse.Content = append(toolResponse.Content, resultBlock)
+			blocks = append(blocks, resultBlock)
 		}
+		toolResponse := ant.NewUserMessage()
+		toolResponse.Content = blocks
 
 		m.messages = append(m.messages, toolResponse)
 		m.viewport.SetContent(lipgloss.NewStyle().Width(m.viewport.Width).Render(strings.Join(m.StringMessages(), "\n")))
