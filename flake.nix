@@ -27,6 +27,10 @@
           pkgs.delve
           pkgs.gdlv
           pkgs.golangci-lint
+
+          # Others MCP Servers
+          pkgs.mcp-nixos
+          pkgs.github-mcp-server
         ];
       };
     });
