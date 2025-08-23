@@ -27,6 +27,8 @@ F1: View Help
 F2: View Logs
 `
 
+const LOG_FILE = "session.log"
+
 const GAP = "\n\n"
 
 type MCPServerConfig struct {
@@ -48,7 +50,7 @@ type ToolResponse struct {
 }
 
 func main() {
-	logfile, err := os.OpenFile("app.log", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+	logfile, err := os.OpenFile(LOG_FILE, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Fatal("Failed to open log file:", err)
 	}
@@ -80,18 +82,11 @@ func main() {
 	if _, err := p.Run(); err != nil {
 		LOG.Fatal(err)
 	}
-
-	// logfile, err = os.OpenFile("app.log", os.O_RDONLY, 0644)
-	// if err != nil {
-	// 	log.Fatal("Failed to open log file:", err)
-	// }
-	// defer logfile.Close()
-	// contents, _ = io.ReadAll(logfile)
-	// fmt.Fprint(os.Stderr, string(contents))
 }
 
 type model struct {
 	secondaryDisplay bool
+	aiThinking       bool
 	viewport         viewport.Model
 	messages         []ant.MessageParam
 	textarea         textarea.Model
@@ -217,6 +212,10 @@ func (m model) StringMessages() []string {
 				} else {
 					strMsg.WriteString(" (Used tool successfully!)")
 				}
+			} else if ct.OfThinking != nil {
+				strMsg.WriteString(" (AI is thinking...)")
+			} else {
+				strMsg.WriteString(" (Can't display block type on terminal!)")
 			}
 		}
 
@@ -265,7 +264,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.secondaryDisplay = !m.secondaryDisplay
 			if m.secondaryDisplay {
 				logsContent := []byte{}
-				if file, err := os.Open("app.log"); err == nil {
+				if file, err := os.Open(LOG_FILE); err == nil {
 					logsContent, _ = io.ReadAll(file)
 				}
 				m.viewport.SetContent(viewportWidthStyle.Render(string(logsContent)))
@@ -280,7 +279,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			)
 
 			m.messages = append(m.messages, authorMsg)
-			claudeCmd := claudeCall(context.Background(), m.claudeClient, m.messages, m.tools)
+			claudeCmd := claudeCall(context.Background(), &m)
+			m.messages = append(m.messages, ant.MessageParam{
+				Role: "assistant",
+				Content: []ant.ContentBlockParamUnion{
+					ant.NewThinkingBlock("", ""),
+				},
+			})
 
 			m.viewport.SetContent(lipgloss.NewStyle().Width(m.viewport.Width).Render(strings.Join(m.StringMessages(), "\n")))
 			m.textarea.Reset()
@@ -293,7 +298,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg
 		return m, nil
 	case ClaudeResponse:
-		m.messages = append(m.messages, msg.ToParam())
+		m.aiThinking = false
+		m.messages[len(m.messages)-1] = msg.ToParam() // Replaces last message with Claude real response
 		m.viewport.SetContent(lipgloss.NewStyle().Width(m.viewport.Width).Render(strings.Join(m.StringMessages(), "\n")))
 		m.viewport.GotoBottom()
 
@@ -310,11 +316,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case ToolResponse:
-		// toolResponse := ant.MessageParam{
-		// 	Role:    "assistant",
-		// 	Content: []ant.ContentBlockParamUnion{},
-		// }
-
 		blocks := make([]ant.ContentBlockParamUnion, 0, len(msg.MCPResponse.Content))
 		for _, ct := range msg.MCPResponse.Content {
 			resultBlock := ant.NewToolResultBlock(msg.ToolId, ct.TextContent.Text, strings.Contains(ct.TextContent.Text, "Error"))
@@ -324,10 +325,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		toolResponse.Content = blocks
 
 		m.messages = append(m.messages, toolResponse)
+		claudeCmd := claudeCall(context.Background(), &m)
+		m.messages = append(m.messages, ant.MessageParam{
+			Role: "assistant",
+			Content: []ant.ContentBlockParamUnion{
+				ant.NewThinkingBlock("", ""),
+			},
+		})
+
 		m.viewport.SetContent(lipgloss.NewStyle().Width(m.viewport.Width).Render(strings.Join(m.StringMessages(), "\n")))
 		m.viewport.GotoBottom()
-
-		claudeCmd := claudeCall(context.Background(), m.claudeClient, m.messages, m.tools)
 		return m, tea.Batch(taCmd, vpCmd, claudeCmd)
 	}
 
@@ -354,17 +361,19 @@ func toolCall(ctx context.Context, client *mcp.Client, toolInfo ant.ToolUseBlock
 	}
 }
 
-func claudeCall(ctx context.Context, client ant.Client, chatHistory []ant.MessageParam, tools []ant.ToolUnionParam) tea.Cmd {
+func claudeCall(ctx context.Context, m *model) tea.Cmd {
 	ctx, cancelCtx := context.WithTimeout(ctx, 10*time.Minute)
+	messages := m.messages
 	return func() tea.Msg {
 		defer cancelCtx()
+		m.aiThinking = true
 
 		LOG.Println("Calling claude for response...")
-		message, err := client.Messages.New(ctx, ant.MessageNewParams{
+		message, err := m.claudeClient.Messages.New(ctx, ant.MessageNewParams{
 			MaxTokens: 1024,
-			Messages:  chatHistory,
+			Messages:  messages,
 			Model:     ant.ModelClaudeSonnet4_20250514,
-			Tools:     tools,
+			Tools:     m.tools,
 		},
 			option.WithDebugLog(LOG),
 		)
