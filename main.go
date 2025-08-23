@@ -16,7 +16,6 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/invopop/jsonschema"
 	"github.com/joho/godotenv"
 	mcp "github.com/metoro-io/mcp-golang"
 	"github.com/metoro-io/mcp-golang/transport/http"
@@ -156,20 +155,21 @@ func initialModel(apiKey string, config Config) model {
 				desc = *tool.Description
 			}
 			LOG.Println("Adding tool:", tool.Name, "-", desc)
+			LOG.Printf("The tool has the following schema:\n%#v", tool.InputSchema)
 			clientByToolName[tool.Name] = client
-
-			reflector := jsonschema.Reflector{
-				AllowAdditionalProperties: false,
-				DoNotReference:            true,
+			schema := tool.InputSchema.(map[string]any)
+			schemaRequired := schema["required"].([]any)
+			required := make([]string, 0, len(schemaRequired))
+			for _, v := range schemaRequired {
+				required = append(required, v.(string))
 			}
-			schema := reflector.Reflect(tool.InputSchema)
 			tools = append(tools, ant.ToolUnionParam{
 				OfTool: &ant.ToolParam{
 					Name:        tool.Name,
 					Description: param.NewOpt(desc),
 					InputSchema: ant.ToolInputSchemaParam{
-						Required:   schema.Required,
-						Properties: schema.Properties,
+						Required:   required,
+						Properties: schema["properties"],
 					},
 				},
 			})
@@ -208,10 +208,15 @@ func (m model) StringMessages() []string {
 				strMsg.WriteString(ct.OfText.Text)
 			} else if ct.OfToolUse != nil {
 				toolName := ct.OfToolUse.Name
-				strMsg.WriteString("Trying to use tool `")
+				strMsg.WriteString(" (Trying to use tool `")
 				strMsg.WriteString(toolName)
-				strMsg.WriteString("`")
-
+				strMsg.WriteString("`)")
+			} else if ct.OfToolResult != nil {
+				if ct.OfToolResult.IsError.Value {
+					strMsg.WriteString(" (Failed to use tool!)")
+				} else {
+					strMsg.WriteString(" (Used tool successfully!)")
+				}
 			}
 		}
 
@@ -333,15 +338,9 @@ func toolCall(ctx context.Context, client *mcp.Client, toolInfo ant.ToolUseBlock
 	ctx, cancelCtx := context.WithTimeout(ctx, 10*time.Second)
 	return func() tea.Msg {
 		defer cancelCtx()
-		LOG.Printf("Calling tool `%s` for response...", toolInfo.Name)
 
-		toolJsonReq, err := toolInfo.Input.MarshalJSON()
-		if err != nil {
-			LOG.Printf("ERROR: Failed to marshal tool input into string!")
-			return err
-		}
-
-		resp, err := client.CallTool(ctx, toolInfo.Name, toolJsonReq)
+		LOG.Printf("Calling tool `%s` for response with:\n%#v", toolInfo.Name, toolInfo.Input)
+		resp, err := client.CallTool(ctx, toolInfo.Name, toolInfo.Input)
 		if err != nil {
 			LOG.Println("ERROR: Failed to call tool:", err)
 			return err
