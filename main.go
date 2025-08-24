@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -25,8 +26,8 @@ import (
 )
 
 const HELP_CONTENT = `
-F1: View Help
-F2: View Logs
+F1: Toggle Help
+F2: Toggle Logs
 `
 
 const LOG_FILE = "session.log"
@@ -44,6 +45,7 @@ var MCP_SERVERS_TYPE = struct {
 }
 
 type MCPServerConfig struct {
+	Name     string
 	Type     MCPServerType
 	Endpoint string
 	URL      string
@@ -170,9 +172,6 @@ func initialModel(
 	clientByToolName := make(map[string]*client.Client)
 	mcpClients := make([]*client.Client, 0, len(config.Servers))
 	for _, clientConfig := range config.Servers {
-		connCtx, cancelConnCtx := context.WithTimeout(ctx, 10*time.Second)
-		defer cancelConnCtx()
-
 		var err error
 		var trans transport.Interface
 		if clientConfig.Type == MCP_SERVERS_TYPE.Http {
@@ -189,7 +188,7 @@ func initialModel(
 		}
 
 		mcpClient := client.NewClient(trans)
-		err = mcpClient.Start(connCtx)
+		err = mcpClient.Start(ctx)
 		if err != nil {
 			LOG.Printf("Failed to start client `%#v`: %s", clientConfig, err)
 			continue
@@ -200,7 +199,7 @@ func initialModel(
 		})
 
 		LOG.Printf("Initializing client!")
-		capabilities, err := mcpClient.Initialize(connCtx, mcp.InitializeRequest{
+		capabilities, err := mcpClient.Initialize(ctx, mcp.InitializeRequest{
 			Params: mcp.InitializeParams{
 				ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
 				ClientInfo: mcp.Implementation{
@@ -217,13 +216,10 @@ func initialModel(
 		mcpClients = append(mcpClients, mcpClient)
 
 		if capabilities.Capabilities.Tools != nil {
-			toolCtx, cancelToolCtx := context.WithTimeout(connCtx, 5*time.Second)
-			defer cancelToolCtx()
-
 			var defaultCursor mcp.Cursor
 			var cursor mcp.Cursor
 			for {
-				svTools, err := mcpClient.ListTools(toolCtx, mcp.ListToolsRequest{
+				svTools, err := mcpClient.ListTools(ctx, mcp.ListToolsRequest{
 					PaginatedRequest: mcp.PaginatedRequest{
 						Params: mcp.PaginatedParams{
 							Cursor: cursor,
@@ -447,11 +443,17 @@ func toolCall(ctx context.Context, client *client.Client, toolInfo ant.ToolUseBl
 			LOG.Panicf("Failed to format: %#v: %s", toolInfo.Input, err)
 		}
 
-		LOG.Printf("Calling tool `%s` for response with:\n%#v", toolInfo.Name, string(bytes))
+		params := map[string]any{}
+		err = json.Unmarshal(bytes, &params)
+		if err != nil {
+			LOG.Panicf("Failed to unmarshall into a map: %s\n%s", err, string(bytes))
+		}
+
+		LOG.Printf("Calling tool `%s` for response with:\n%#v", toolInfo.Name, params)
 		resp, err := client.CallTool(ctx, mcp.CallToolRequest{
 			Params: mcp.CallToolParams{
 				Name:      toolInfo.Name,
-				Arguments: string(bytes),
+				Arguments: params,
 			},
 		})
 		if err != nil {
@@ -473,8 +475,6 @@ func claudeCall(ctx context.Context, m *model) tea.Cmd {
 	return func() tea.Msg {
 		defer cancelCtx()
 		m.aiThinking = true
-
-		// return errors.New("Example error")
 
 		LOG.Println("Calling claude for response...")
 		message, err := m.claudeClient.Messages.New(ctx, ant.MessageNewParams{
@@ -498,11 +498,10 @@ func claudeCall(ctx context.Context, m *model) tea.Cmd {
 
 func (m model) View() string {
 	if m.err != nil {
-		LOG.Println("Displaying error: ", m.err)
 		return fmt.Sprintf(
-			"%s%s%s",
+			"%s\n%s\n%s",
 			m.viewport.View(),
-			"ERROR: "+m.err.Error(),
+			lipgloss.NewStyle().Foreground(lipgloss.Color("#ff0000")).Render("ERROR: ")+m.err.Error(),
 			m.textarea.View(),
 		)
 	} else {
