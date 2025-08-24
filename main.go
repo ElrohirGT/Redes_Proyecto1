@@ -171,6 +171,7 @@ func initialModel(
 	tools := make([]ant.ToolUnionParam, 0, len(config.Servers))
 	clientByToolName := make(map[string]*client.Client)
 	mcpClients := make([]*client.Client, 0, len(config.Servers))
+
 	for _, clientConfig := range config.Servers {
 		var err error
 		var trans transport.Interface
@@ -434,7 +435,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func toolCall(ctx context.Context, client *client.Client, toolInfo ant.ToolUseBlock) tea.Cmd {
-	ctx, cancelCtx := context.WithTimeout(ctx, 10*time.Minute)
+	ctx, cancelCtx := context.WithTimeout(ctx, 20*time.Minute)
 	return func() tea.Msg {
 		defer cancelCtx()
 
@@ -449,7 +450,7 @@ func toolCall(ctx context.Context, client *client.Client, toolInfo ant.ToolUseBl
 			LOG.Panicf("Failed to unmarshall into a map: %s\n%s", err, string(bytes))
 		}
 
-		LOG.Printf("Calling tool `%s` for response with:\n%#v", toolInfo.Name, params)
+		LOG.Printf("Calling tool `%s` with: %#v", toolInfo.Name, params)
 		resp, err := client.CallTool(ctx, mcp.CallToolRequest{
 			Params: mcp.CallToolParams{
 				Name:      toolInfo.Name,
@@ -460,6 +461,7 @@ func toolCall(ctx context.Context, client *client.Client, toolInfo ant.ToolUseBl
 			LOG.Println("ERROR: Failed to call tool:", err)
 			return err
 		}
+		LOG.Printf("Tool `%s` responded with: %#v", toolInfo.Name, resp)
 
 		return ToolResponse{
 			IsError:     false,

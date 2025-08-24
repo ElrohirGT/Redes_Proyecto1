@@ -1,0 +1,8 @@
+{
+  "browser": {
+    "browserName": "chromium",
+		"launchOptions": {
+			"executablePath": "/nix/store/wsvpxsmbdcdv0xd2kasbwpjk320mqc7f-playwright-browsers/chromium-1181/chrome-linux/chrome"
+		}
+  }
+}
