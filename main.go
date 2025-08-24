@@ -2,16 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/ElrohirGT/Redes_Proyecto1/lib"
 	ant "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
@@ -20,10 +19,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/joho/godotenv"
-	mcp "github.com/metoro-io/mcp-golang"
-	"github.com/metoro-io/mcp-golang/transport"
-	"github.com/metoro-io/mcp-golang/transport/http"
-	"github.com/metoro-io/mcp-golang/transport/stdio"
+	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -55,7 +53,8 @@ type MCPServerConfig struct {
 }
 
 type Config struct {
-	Servers []MCPServerConfig
+	MaxTokens uint
+	Servers   []MCPServerConfig
 }
 
 var LOG *log.Logger
@@ -63,12 +62,11 @@ var LOG *log.Logger
 type ClaudeResponse = *ant.Message
 type ToolResponse struct {
 	IsError     bool
-	MCPResponse *mcp.ToolResponse
+	MCPResponse *mcp.CallToolResult
 	ToolId      string
 }
 
 func main() {
-
 	logfile, err := os.OpenFile(LOG_FILE, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Fatal("Failed to open log file:", err)
@@ -124,6 +122,7 @@ func main() {
 }
 
 type model struct {
+	maxTokens        uint
 	wg               *sync.WaitGroup
 	programCtx       context.Context
 	secondaryDisplay bool
@@ -135,9 +134,9 @@ type model struct {
 
 	// AI AGENTS PROPERTIES
 	claudeClient     ant.Client
-	mcpClients       []*mcp.Client
+	mcpClients       []*client.Client
 	tools            []ant.ToolUnionParam
-	clientByToolName map[string]*mcp.Client
+	clientByToolName map[string]*client.Client
 	err              error
 }
 
@@ -164,161 +163,95 @@ func initialModel(
 	vp := viewport.New(30, 5)
 	vp.SetContent("Welcome! Chat to claude...\nPress F1 to view help!")
 
-	client := ant.NewClient(
+	antClient := ant.NewClient(
 		option.WithAPIKey(apiKey),
 	)
 
 	tools := make([]ant.ToolUnionParam, 0, len(config.Servers))
-	clientByToolName := make(map[string]*mcp.Client)
-	mcpClients := make([]*mcp.Client, 0, len(config.Servers))
+	clientByToolName := make(map[string]*client.Client)
+	mcpClients := make([]*client.Client, 0, len(config.Servers))
 	for _, clientConfig := range config.Servers {
 		connCtx, cancelConnCtx := context.WithTimeout(ctx, 10*time.Second)
 		defer cancelConnCtx()
 
-		var trans transport.Transport
+		var err error
+		var trans transport.Interface
 		if clientConfig.Type == MCP_SERVERS_TYPE.Http {
-			trans = http.NewHTTPClientTransport(clientConfig.Endpoint).WithBaseURL(clientConfig.URL)
+			trans, err = transport.NewStreamableHTTP(
+				clientConfig.URL,
+			)
+			if err != nil {
+				LOG.Printf("Failed to connect to `%s`: %s", clientConfig.URL, err)
+			}
 			LOG.Println("Connecting to (http) client:", clientConfig.URL)
 		} else {
-			cmd := exec.CommandContext(ctx, clientConfig.Command, clientConfig.Args...)
-			// cmd := exec.Command(clientConfig.Command, clientConfig.Args...)
-			var stdin io.WriteCloser
-			stdin, err := cmd.StdinPipe()
-			if err != nil {
-				log.Fatalf("Failed to get stdin pipe: %v", err)
-			}
-			stdin = lib.NewWriterCloser(stdin)
-
-			var stdout io.ReadCloser
-			stdout, err = cmd.StdoutPipe()
-			if err != nil {
-				log.Fatalf("Failed to get stdout pipe: %v", err)
-			}
-			stdout = lib.NewReaderCloser(stdout)
-
-			var stderr io.ReadCloser
-			stderr, err = cmd.StderrPipe()
-			if err != nil {
-				log.Fatalf("Failed to get stderr pipe: %v", err)
-			}
-			stderr = lib.NewReaderCloser(stderr)
-
-			LOG.Printf("Starting `%s`...", cmd)
-			err = cmd.Start()
-			if err != nil {
-				LOG.Panicf("Failed to start server! %s", err)
-			}
-
-			// go func() {
-			// 	b := strings.Builder{}
-			// 	b.WriteString("=== STDIN ===\n")
-			// 	wCount, err := io.Copy(&b, cmd.Stdin)
-			// 	LOG.Printf("Printed %d\n", wCount)
-			// 	// contents, err := io.ReadAll(cmd.Stdin)
-			// 	if err != nil {
-			// 		LOG.Println("Failed to write STDIN in logs!", err)
-			// 		return
-			// 	}
-			// 	// b.Write(contents)
-			// }()
-
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				defer cancelConnCtx()
-
-				err := cmd.Wait()
-				if err != nil {
-					LOG.Printf("Server `%s` failed!\n%s", cmd, err)
-				}
-				LOG.Printf("Program `%s` ended! Collecting output...", cmd)
-
-				b := strings.Builder{}
-				b.WriteString("=== STDIN ===\n")
-				_, err = io.Copy(&b, stdin.(lib.WriteCloser).Buffer)
-				if err != nil {
-					LOG.Println("Failed to write STDIN in logs!")
-				}
-				b.WriteRune('\n')
-
-				b.WriteString("=== STDOUT ===\n")
-				_, err = io.Copy(&b, stdout.(lib.ReadCloser).Buffer)
-				if err != nil {
-					LOG.Println("Failed to write STDOUT in logs!")
-				}
-				b.WriteRune('\n')
-
-				b.WriteString("=== STDERR ===\n")
-				_, err = io.Copy(&b, stderr.(lib.ReadCloser).Buffer)
-				if err != nil {
-					LOG.Println("Failed to write STDERR in logs!")
-				}
-				b.WriteRune('\n')
-
-				LOG.Printf("Server `%s` output:\n%s", cmd, b.String())
-			}()
-
-			// LOG.Println("Waiting for server to start")
-			// time.Sleep(1 * time.Second)
-
-			trans = stdio.NewStdioServerTransportWithIO(stdout, stdin)
-			LOG.Println("Connecting to (stdio) client:", cmd)
+			trans = transport.NewStdio(clientConfig.Command, os.Environ(), clientConfig.Args...)
+			LOG.Println("Connecting to (stdio) client:", clientConfig.Command)
 		}
 
-		client := mcp.NewClientWithInfo(trans, mcp.ClientInfo{
-			Name:    "CLIude",
-			Version: "1.0.0",
+		mcpClient := client.NewClient(trans)
+		err = mcpClient.Start(connCtx)
+		if err != nil {
+			LOG.Printf("Failed to start client `%#v`: %s", clientConfig, err)
+			continue
+		}
+
+		mcpClient.OnNotification(func(notification mcp.JSONRPCNotification) {
+			LOG.Printf("Client `%#v` notification: %s", clientConfig, notification.Method)
 		})
+
 		LOG.Printf("Initializing client!")
-		capabilities, err := client.Initialize(connCtx)
-		LOG.Printf("Server capabilities:\n%#v", capabilities)
+		capabilities, err := mcpClient.Initialize(connCtx, mcp.InitializeRequest{
+			Params: mcp.InitializeParams{
+				ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+				ClientInfo: mcp.Implementation{
+					Name:    "CLIude",
+					Version: "1.0.0",
+				},
+				Capabilities: mcp.ClientCapabilities{},
+			},
+		})
 		if err != nil {
 			LOG.Panicf("Failed to connect to client: %s", err)
 		}
-		mcpClients = append(mcpClients, client)
+		LOG.Printf("Server capabilities:\n%#v", capabilities)
+		mcpClients = append(mcpClients, mcpClient)
 
 		if capabilities.Capabilities.Tools != nil {
 			toolCtx, cancelToolCtx := context.WithTimeout(connCtx, 5*time.Second)
 			defer cancelToolCtx()
 
-			var cursor *string
+			var defaultCursor mcp.Cursor
+			var cursor mcp.Cursor
 			for {
-				svTools, err := client.ListTools(toolCtx, cursor)
+				svTools, err := mcpClient.ListTools(toolCtx, mcp.ListToolsRequest{
+					PaginatedRequest: mcp.PaginatedRequest{
+						Params: mcp.PaginatedParams{
+							Cursor: cursor,
+						},
+					},
+				})
 				if err != nil {
 					LOG.Panicf("Failed to obtain tools for client: %s", err)
 				}
 
 				for _, tool := range svTools.Tools {
-					desc := ""
-					if tool.Description != nil {
-						desc = *tool.Description
-					}
-					LOG.Printf("Adding tool: %s - %s\nThe tool has the following schema:\n%#v", tool.Name, desc, tool.InputSchema)
+					LOG.Printf("Adding tool: %s - %s\nThe tool has the following schema:\n%#v", tool.Name, tool.Description, tool.InputSchema)
 
-					clientByToolName[tool.Name] = client
-					schema := tool.InputSchema.(map[string]any)
-					requiredForSchema, found := schema["required"]
-					if found {
-						schemaRequired := requiredForSchema.([]any)
-						required := make([]string, 0, len(schemaRequired))
-						for _, v := range schemaRequired {
-							required = append(required, v.(string))
-						}
-
-						tools = append(tools, ant.ToolUnionParam{
-							OfTool: &ant.ToolParam{
-								Name:        tool.Name,
-								Description: param.NewOpt(desc),
-								InputSchema: ant.ToolInputSchemaParam{
-									Required:   required,
-									Properties: schema["properties"],
-								},
+					clientByToolName[tool.Name] = mcpClient
+					tools = append(tools, ant.ToolUnionParam{
+						OfTool: &ant.ToolParam{
+							Name:        tool.Name,
+							Description: param.NewOpt(tool.Description),
+							InputSchema: ant.ToolInputSchemaParam{
+								Required:   tool.InputSchema.Required,
+								Properties: tool.InputSchema.Properties,
 							},
-						})
-					}
+						},
+					})
 				}
 
-				if svTools.NextCursor == nil {
+				if svTools.NextCursor == defaultCursor {
 					break // No more pages
 				}
 				cursor = svTools.NextCursor
@@ -327,12 +260,13 @@ func initialModel(
 	}
 
 	return model{
+		maxTokens:        config.MaxTokens,
 		wg:               wg,
 		programCtx:       ctx,
 		textarea:         ta,
 		viewport:         vp,
 		senderStyle:      lipgloss.NewStyle().Foreground(lipgloss.Color("5")),
-		claudeClient:     client,
+		claudeClient:     antClient,
 		mcpClients:       mcpClients,
 		clientByToolName: clientByToolName,
 		err:              nil,
@@ -452,6 +386,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// We handle errors just like any other message
 	case error:
+		m.aiThinking = false
 		m.err = msg
 		return m, nil
 	case ClaudeResponse:
@@ -465,7 +400,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			toolName := toolBlock.Name
 			client, found := m.clientByToolName[toolName]
 			if !found {
-				LOG.Panic("Claude tried to use", toolName, ". But this tool doens't exist!")
+				LOG.Panic("Claude tried to use", toolName, ". But this tool doesn't exist!")
 			}
 
 			toolCmd := toolCall(m.programCtx, client, toolBlock)
@@ -475,8 +410,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ToolResponse:
 		blocks := make([]ant.ContentBlockParamUnion, 0, len(msg.MCPResponse.Content))
 		for _, ct := range msg.MCPResponse.Content {
-			resultBlock := ant.NewToolResultBlock(msg.ToolId, ct.TextContent.Text, strings.Contains(ct.TextContent.Text, "Error"))
-			blocks = append(blocks, resultBlock)
+			switch ct := ct.(type) {
+			case mcp.TextContent:
+				resultBlock := ant.NewToolResultBlock(msg.ToolId, ct.Text, strings.Contains(ct.Text, "Error"))
+				blocks = append(blocks, resultBlock)
+			default:
+				LOG.Printf("Unsupported block type for tool response! %#v", ct)
+			}
 		}
 		toolResponse := ant.NewUserMessage()
 		toolResponse.Content = blocks
@@ -498,13 +438,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(taCmd, vpCmd)
 }
 
-func toolCall(ctx context.Context, client *mcp.Client, toolInfo ant.ToolUseBlock) tea.Cmd {
+func toolCall(ctx context.Context, client *client.Client, toolInfo ant.ToolUseBlock) tea.Cmd {
 	ctx, cancelCtx := context.WithTimeout(ctx, 10*time.Second)
 	return func() tea.Msg {
 		defer cancelCtx()
 
-		LOG.Printf("Calling tool `%s` for response with:\n%#v", toolInfo.Name, toolInfo.Input)
-		resp, err := client.CallTool(ctx, toolInfo.Name, toolInfo.Input)
+		bytes, err := toolInfo.Input.MarshalJSON()
+		if err != nil {
+			LOG.Panicf("Failed to format: %#v: %s", toolInfo.Input, err)
+		}
+
+		LOG.Printf("Calling tool `%s` for response with:\n%#v", toolInfo.Name, string(bytes))
+		resp, err := client.CallTool(ctx, mcp.CallToolRequest{
+			Params: mcp.CallToolParams{
+				Name:      toolInfo.Name,
+				Arguments: string(bytes),
+			},
+		})
 		if err != nil {
 			LOG.Println("ERROR: Failed to call tool:", err)
 			return err
@@ -525,9 +475,11 @@ func claudeCall(ctx context.Context, m *model) tea.Cmd {
 		defer cancelCtx()
 		m.aiThinking = true
 
+		// return errors.New("Example error")
+
 		LOG.Println("Calling claude for response...")
 		message, err := m.claudeClient.Messages.New(ctx, ant.MessageNewParams{
-			MaxTokens: 1024,
+			MaxTokens: int64(m.maxTokens),
 			Messages:  messages,
 			Model:     ant.ModelClaudeSonnet4_20250514,
 			Tools:     m.tools,
@@ -547,11 +499,11 @@ func claudeCall(ctx context.Context, m *model) tea.Cmd {
 
 func (m model) View() string {
 	if m.err != nil {
+		LOG.Println("Displaying error: ", m.err)
 		return fmt.Sprintf(
-			"%s%s%s%s",
+			"%s%s%s",
 			m.viewport.View(),
 			"ERROR: "+m.err.Error(),
-			"\n",
 			m.textarea.View(),
 		)
 	} else {

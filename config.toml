@@ -1,13 +1,14 @@
+MaxTokens = 3000
 # This works!
 # [[Servers]]
 # Type = "http"
 # Endpoint = "/mcp"
 # URL = "http://localhost:8080"
 
-[[Servers]]
-Type = "stdio"
-Command = "mcp-server-playwright"
-Args = []
+# [[Servers]]
+# # Type = "stdio"
+# # Command = "mcp-server-playwright"
+# # Args = []
 # Type = "http"
 # Endpoint = "/mcp"
 # URL = "http://localhost:6060"
@@ -20,7 +21,7 @@ Args = ["stdio"]
 # Endpoint = "/mcp"
 # URL = "https://api.githubcopilot.com/"
 
-# [[Servers]]
-# Type = "stdio"
-# Command = "mcp-nixos"
-# Args = []
+[[Servers]]
+Type = "stdio"
+Command = "mcp-nixos"
+Args = []
