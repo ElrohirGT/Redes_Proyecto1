@@ -434,7 +434,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func toolCall(ctx context.Context, client *client.Client, toolInfo ant.ToolUseBlock) tea.Cmd {
-	ctx, cancelCtx := context.WithTimeout(ctx, 10*time.Second)
+	ctx, cancelCtx := context.WithTimeout(ctx, 10*time.Minute)
 	return func() tea.Msg {
 		defer cancelCtx()
 

@@ -2,27 +2,27 @@ MaxTokens = 3000
 # This works!
 [[Servers]]
 Name = "Custom MCP"
-Type = "http"
-Endpoint = "/mcp"
-URL = "http://localhost:8080/mcp"
-# Type = "stdio"
-# Command = "./server/Redes_MCPServer"
-# Args = ["-t", "stdio"]
+# Type = "http"
+# Endpoint = "/mcp"
+# URL = "http://localhost:8080/mcp"
+Type = "stdio"
+Command = "./server/Redes_MCPServer"
+Args = ["-t", "stdio"]
 
-# [[Servers]]
-# Name = "Playwright MCP"
-# # Type = "stdio"
-# # Command = "mcp-server-playwright"
-# # Args = []
+[[Servers]]
+Name = "Playwright MCP"
+Type = "stdio"
+Command = "mcp-server-playwright"
+Args = []
 # Type = "http"
 # Endpoint = "/mcp"
 # URL = "http://localhost:6060"
 
-[[Servers]]
-Name = "Github MCP"
-Type = "stdio"
-Command = "github-mcp-server"
-Args = ["stdio"]
+# [[Servers]]
+# Name = "Github MCP"
+# Type = "stdio"
+# Command = "github-mcp-server"
+# Args = ["stdio"]
 # Type = "http"
 # Endpoint = "/mcp"
 # URL = "https://api.githubcopilot.com/"
