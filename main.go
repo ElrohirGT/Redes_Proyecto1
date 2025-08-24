@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ElrohirGT/Redes_Proyecto1/lib"
 	ant "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
@@ -181,25 +182,26 @@ func initialModel(
 		} else {
 			cmd := exec.CommandContext(ctx, clientConfig.Command, clientConfig.Args...)
 			// cmd := exec.Command(clientConfig.Command, clientConfig.Args...)
+			var stdin io.WriteCloser
 			stdin, err := cmd.StdinPipe()
 			if err != nil {
 				log.Fatalf("Failed to get stdin pipe: %v", err)
 			}
-			stdout, err := cmd.StdoutPipe()
+			stdin = lib.NewWriterCloser(stdin)
+
+			var stdout io.ReadCloser
+			stdout, err = cmd.StdoutPipe()
 			if err != nil {
 				log.Fatalf("Failed to get stdout pipe: %v", err)
 			}
-			_, err = cmd.StderrPipe()
+			stdout = lib.NewReaderCloser(stdout)
+
+			var stderr io.ReadCloser
+			stderr, err = cmd.StderrPipe()
 			if err != nil {
 				log.Fatalf("Failed to get stderr pipe: %v", err)
 			}
-
-			// stderrBuffer := bytes.Buffer{}
-			// stdoutBuffer := bytes.Buffer{}
-			// stdinBuffer := bytes.Buffer{}
-			// cmd.Stdin = &stdinBuffer
-			// cmd.Stdout = &stdoutBuffer
-			// cmd.Stderr = &stderrBuffer
+			stderr = lib.NewReaderCloser(stderr)
 
 			LOG.Printf("Starting `%s`...", cmd)
 			err = cmd.Start()
@@ -207,42 +209,57 @@ func initialModel(
 				LOG.Panicf("Failed to start server! %s", err)
 			}
 
+			// go func() {
+			// 	b := strings.Builder{}
+			// 	b.WriteString("=== STDIN ===\n")
+			// 	wCount, err := io.Copy(&b, cmd.Stdin)
+			// 	LOG.Printf("Printed %d\n", wCount)
+			// 	// contents, err := io.ReadAll(cmd.Stdin)
+			// 	if err != nil {
+			// 		LOG.Println("Failed to write STDIN in logs!", err)
+			// 		return
+			// 	}
+			// 	// b.Write(contents)
+			// }()
+
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				defer cancelConnCtx()
+
 				err := cmd.Wait()
 				if err != nil {
 					LOG.Printf("Server `%s` failed!\n%s", cmd, err)
 				}
 				LOG.Printf("Program `%s` ended! Collecting output...", cmd)
 
-				// FIXME: Log all output to main log file!
+				b := strings.Builder{}
+				b.WriteString("=== STDIN ===\n")
+				_, err = io.Copy(&b, stdin.(lib.WriteCloser).Buffer)
+				if err != nil {
+					LOG.Println("Failed to write STDIN in logs!")
+				}
+				b.WriteRune('\n')
 
-				// b := strings.Builder{}
-				// b.WriteString("=== STDIN ===\n")
-				// contents, err := io.ReadAll(stdin)
-				// if err == nil {
-				// 	b.WriteRune('\n')
-				// 	b.Write(contents)
-				// }
-				//
-				// b.WriteString("=== STDOUT ===\n")
-				// contents, err := io.ReadAll(stdout)
-				// if err == nil {
-				// 	b.WriteRune('\n')
-				// 	b.Write(contents)
-				// }
-				// b.WriteString("=== STDERR ===\n")
-				// contents, err = io.ReadAll(stderr)
-				// if err == nil {
-				// 	b.Write(contents)
-				// }
-				// LOG.Printf("Server `%s` output:\n%s", cmd, b.String())
+				b.WriteString("=== STDOUT ===\n")
+				_, err = io.Copy(&b, stdout.(lib.ReadCloser).Buffer)
+				if err != nil {
+					LOG.Println("Failed to write STDOUT in logs!")
+				}
+				b.WriteRune('\n')
+
+				b.WriteString("=== STDERR ===\n")
+				_, err = io.Copy(&b, stderr.(lib.ReadCloser).Buffer)
+				if err != nil {
+					LOG.Println("Failed to write STDERR in logs!")
+				}
+				b.WriteRune('\n')
+
+				LOG.Printf("Server `%s` output:\n%s", cmd, b.String())
 			}()
 
 			// LOG.Println("Waiting for server to start")
-			// time.Sleep(3 * time.Second)
+			// time.Sleep(1 * time.Second)
 
 			trans = stdio.NewStdioServerTransportWithIO(stdout, stdin)
 			LOG.Println("Connecting to (stdio) client:", cmd)
@@ -254,6 +271,7 @@ func initialModel(
 		})
 		LOG.Printf("Initializing client!")
 		capabilities, err := client.Initialize(connCtx)
+		LOG.Printf("Server capabilities:\n%#v", capabilities)
 		if err != nil {
 			LOG.Panicf("Failed to connect to client: %s", err)
 		}
@@ -262,39 +280,48 @@ func initialModel(
 		if capabilities.Capabilities.Tools != nil {
 			toolCtx, cancelToolCtx := context.WithTimeout(connCtx, 5*time.Second)
 			defer cancelToolCtx()
-			svTools, err := client.ListTools(toolCtx, nil)
-			if err != nil {
-				LOG.Panicf("Failed to obtain tools for client: %s", err)
-			}
 
-			for _, tool := range svTools.Tools {
-				desc := ""
-				if tool.Description != nil {
-					desc = *tool.Description
+			var cursor *string
+			for {
+				svTools, err := client.ListTools(toolCtx, cursor)
+				if err != nil {
+					LOG.Panicf("Failed to obtain tools for client: %s", err)
 				}
-				LOG.Printf("Adding tool: %s - %s\nThe tool has the following schema:\n%#v", tool.Name, desc, tool.InputSchema)
 
-				clientByToolName[tool.Name] = client
-				schema := tool.InputSchema.(map[string]any)
-				requiredForSchema, found := schema["required"]
-				if found {
-					schemaRequired := requiredForSchema.([]any)
-					required := make([]string, 0, len(schemaRequired))
-					for _, v := range schemaRequired {
-						required = append(required, v.(string))
+				for _, tool := range svTools.Tools {
+					desc := ""
+					if tool.Description != nil {
+						desc = *tool.Description
 					}
+					LOG.Printf("Adding tool: %s - %s\nThe tool has the following schema:\n%#v", tool.Name, desc, tool.InputSchema)
 
-					tools = append(tools, ant.ToolUnionParam{
-						OfTool: &ant.ToolParam{
-							Name:        tool.Name,
-							Description: param.NewOpt(desc),
-							InputSchema: ant.ToolInputSchemaParam{
-								Required:   required,
-								Properties: schema["properties"],
+					clientByToolName[tool.Name] = client
+					schema := tool.InputSchema.(map[string]any)
+					requiredForSchema, found := schema["required"]
+					if found {
+						schemaRequired := requiredForSchema.([]any)
+						required := make([]string, 0, len(schemaRequired))
+						for _, v := range schemaRequired {
+							required = append(required, v.(string))
+						}
+
+						tools = append(tools, ant.ToolUnionParam{
+							OfTool: &ant.ToolParam{
+								Name:        tool.Name,
+								Description: param.NewOpt(desc),
+								InputSchema: ant.ToolInputSchemaParam{
+									Required:   required,
+									Properties: schema["properties"],
+								},
 							},
-						},
-					})
+						})
+					}
 				}
+
+				if svTools.NextCursor == nil {
+					break // No more pages
+				}
+				cursor = svTools.NextCursor
 			}
 		}
 	}

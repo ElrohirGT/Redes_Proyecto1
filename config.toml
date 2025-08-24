@@ -10,7 +10,7 @@ Command = "mcp-server-playwright"
 Args = []
 # Type = "http"
 # Endpoint = "/mcp"
-# URL = "https://api.githubcopilot.com/"
+# URL = "http://localhost:6060"
 
 [[Servers]]
 Type = "stdio"

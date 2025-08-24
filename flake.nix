@@ -17,6 +17,7 @@
   in {
     devShells = forAllSystems (system: let
       pkgs = nixpkgsFor.${system};
+      playwright = pkgs.callPackage ./playwright.nix {};
     in {
       default = pkgs.mkShell {
         packages = [
@@ -31,7 +32,8 @@
           # Others MCP Servers
           pkgs.mcp-nixos
           pkgs.github-mcp-server
-          pkgs.playwright-mcp
+          # pkgs.playwright-mcp
+          playwright
         ];
       };
     });
