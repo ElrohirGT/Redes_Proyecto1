@@ -1,3 +1,26 @@
+# This works!
+# [[Servers]]
+# Type = "http"
+# Endpoint = "/mcp"
+# URL = "http://localhost:8080"
+
 [[Servers]]
-Endpoint = "/mcp"
-URL = "http://localhost:8080"
+Type = "stdio"
+Command = "mcp-server-playwright"
+Args = []
+# Type = "http"
+# Endpoint = "/mcp"
+# URL = "https://api.githubcopilot.com/"
+
+[[Servers]]
+Type = "stdio"
+Command = "github-mcp-server"
+Args = ["stdio"]
+# Type = "http"
+# Endpoint = "/mcp"
+# URL = "https://api.githubcopilot.com/"
+
+# [[Servers]]
+# Type = "stdio"
+# Command = "mcp-nixos"
+# Args = []

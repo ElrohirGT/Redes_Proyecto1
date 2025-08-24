@@ -31,6 +31,7 @@
           # Others MCP Servers
           pkgs.mcp-nixos
           pkgs.github-mcp-server
+          pkgs.playwright-mcp
         ];
       };
     });
