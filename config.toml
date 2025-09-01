@@ -2,12 +2,12 @@ MaxTokens = 3000
 # This works!
 [[Servers]]
 Name = "Custom MCP"
-# Type = "http"
-# Endpoint = "/mcp"
-# URL = "http://localhost:8080/mcp"
-Type = "stdio"
-Command = "./server/Redes_MCPServer"
-Args = ["-t", "stdio"]
+Type = "http"
+Endpoint = "/mcp"
+URL = "http://localhost:8080/mcp"
+# Type = "stdio"
+# Command = "./server/Redes_MCPServer"
+# Args = ["-t", "stdio"]
 
 [[Servers]]
 Name = "Playwright MCP"
