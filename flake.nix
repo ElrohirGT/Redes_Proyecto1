@@ -15,6 +15,12 @@
     # Nixpkgs instantiated for supported system types.
     nixpkgsFor = forAllSystems (system: import nixpkgs {inherit system;});
   in {
+    packages = forAllSystems (system: let
+      pkgs = nixpkgsFor.${system};
+    in {
+      default = pkgs.callPackage ./package.nix {};
+    });
+
     devShells = forAllSystems (system: let
       pkgs = nixpkgsFor.${system};
       # playwright = pkgs.callPackage ./playwright.nix {};
