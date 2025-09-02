@@ -77,7 +77,7 @@ func main() {
 
 	err = godotenv.Load()
 	if err != nil {
-		LOG.Panic(err)
+		LOG.Println("Failed to read .env file! Make sure env variables are set!")
 	}
 
 	apiKey, exists := os.LookupEnv("API_KEY")
