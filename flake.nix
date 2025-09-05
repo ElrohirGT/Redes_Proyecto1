@@ -29,6 +29,7 @@
       default = pkgs.mkShell {
         packages = [
           python
+          pkgs.nodejs
 
           pkgs.go
           pkgs.gotools
