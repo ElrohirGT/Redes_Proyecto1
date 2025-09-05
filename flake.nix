@@ -23,10 +23,13 @@
 
     devShells = forAllSystems (system: let
       pkgs = nixpkgsFor.${system};
+      python = pkgs.python3.withPackages (p: [p.fastmcp p.textblob]);
       # playwright = pkgs.callPackage ./playwright.nix {};
     in {
       default = pkgs.mkShell {
         packages = [
+          python
+
           pkgs.go
           pkgs.gotools
           pkgs.go-tools
