@@ -45,12 +45,11 @@ var MCP_SERVERS_TYPE = struct {
 }
 
 type MCPServerConfig struct {
-	Name     string
-	Type     MCPServerType
-	Endpoint string
-	URL      string
-	Command  string
-	Args     []string
+	Name    string
+	Type    MCPServerType
+	URL     string
+	Command string
+	Args    []string
 }
 
 type Config struct {
@@ -182,10 +181,10 @@ func initialModel(
 			if err != nil {
 				LOG.Printf("Failed to connect to `%s`: %s", clientConfig.URL, err)
 			}
-			LOG.Println("Connecting to (http) client:", clientConfig.URL)
+			LOG.Println("Connecting to (http) client:", clientConfig.Name, clientConfig.URL)
 		} else {
 			trans = transport.NewStdio(clientConfig.Command, os.Environ(), clientConfig.Args...)
-			LOG.Println("Connecting to (stdio) client:", clientConfig.Command)
+			LOG.Println("Connecting to (stdio) client:", clientConfig.Name, clientConfig.Command)
 		}
 
 		mcpClient := client.NewClient(trans)
